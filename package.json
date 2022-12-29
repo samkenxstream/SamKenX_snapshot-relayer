@@ -20,7 +20,7 @@
     "connection-string": "^1.0.1",
     "cors": "^2.8.5",
     "eslint": "^6.7.2",
-    "express": "^4.17.1",
+    "express": "^4.17.3",
     "mysql": "^2.18.1",
     "semver": "^7.3.5",
     "ts-node": "^9.1.1",

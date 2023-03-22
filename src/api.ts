@@ -1,18 +1,34 @@
 import express from 'express';
-import { hashMessage } from '@ethersproject/hash';
 import { getAddress } from '@ethersproject/address';
 import snapshot from '@snapshot-labs/snapshot.js';
 import semver from 'semver';
 import { getSafeVersion } from './utils';
 import db from './mysql';
-import pkg from '../package.json';
+import constants from './constants.json';
+import { name as packageName, version as packageVersion } from '../package.json';
 
 const router = express.Router();
 
-async function calculateSafeMessageHash(safe, message, chainId = 1) {
-  const domain: { verifyingContract: string; chainId?: number } = { verifyingContract: safe, chainId };
+async function getSpaceNetwork(space, env = 'livenet') {
+  const {
+    space: { network }
+  } = await snapshot.utils.subgraphRequest(constants[env].api, {
+    space: {
+      __args: { id: space },
+      network: true
+    }
+  });
+  return network;
+}
+
+async function calculateSafeMessageHash(safe, message, network = '1') {
+  const chainId = parseInt(network);
+  const domain: { verifyingContract: string; chainId?: number } = {
+    verifyingContract: safe,
+    chainId
+  };
   // If safe version is less than 1.3.0, then chainId is not required
-  const safeVersion = await getSafeVersion(safe);
+  const safeVersion = await getSafeVersion(safe, network);
   if (semver.lt(safeVersion, '1.3.0')) delete domain.chainId;
   const EIP712_SAFE_MESSAGE_TYPE = {
     SafeMessage: [{ type: 'bytes', name: 'message' }]
@@ -24,35 +40,65 @@ async function calculateSafeMessageHash(safe, message, chainId = 1) {
   });
 }
 
-router.get('/', async (req, res) => {
+router.get('/api', async (req, res) => {
+  const commit = process.env.COMMIT_HASH || '';
+  const version = commit ? `${packageVersion}#${commit.substring(0, 7)}` : packageVersion;
   return res.json({
-    name: pkg.name,
-    version: pkg.version
+    name: packageName,
+    version
   });
 });
 
-router.post('/message', async (req, res) => {
+router.get('/api/messages/:hash', async (req, res) => {
   try {
-    const msg = JSON.parse(req.body.msg);
-    const hash = hashMessage(req.body.msg);
+    const { hash } = req.params;
+    const results = await db.queryAsync('SELECT * FROM messages WHERE msg_hash = ?', [hash]);
+    return res.json(results);
+  } catch (e) {
+    console.log(e);
+    return res.status(500).json({
+      error: 'oops, something went wrong'
+    });
+  }
+});
+
+router.post('/', async (req, res) => {
+  try {
+    const msg = req.body.data.message;
+    const msgHash = snapshot.utils.getHash(req.body.data);
     const address = getAddress(req.body.address);
-    const safeHash = await calculateSafeMessageHash(address, hash);
+    const env = 'livenet';
+    let network = env === 'livenet' ? '1' : '5';
+    if (!req.body.data.types.Space && !msg.settings)
+      network = await getSpaceNetwork(msg.space, env);
+
+    const hash = await calculateSafeMessageHash(address, msgHash, network);
     const params = {
       address,
-      hash: safeHash,
+      hash,
+      msg_hash: msgHash,
       ts: msg.timestamp,
-      payload: JSON.stringify(req.body)
+      payload: JSON.stringify(req.body),
+      network,
+      env
     };
     await db.queryAsync('INSERT IGNORE INTO messages SET ?', params);
     console.log('Received', params);
-    return res.json({ id: hash });
+    return res.json({ id: msgHash });
   } catch (e) {
-    console.log(e);
+    console.log('[EIP721] Unknown error:', e);
     return res.status(500).json({
       error: 'unauthorized',
       error_description: e
     });
   }
+});
+
+router.post('/api/msg', async (req, res) => {
+  return res.status(500).json({
+    error: 'unauthorized',
+    error_description: 'this route is deprecated, please use / instead'
+  });
 });
 
 export default router;
